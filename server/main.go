@@ -10,76 +10,75 @@ import (
 )
 
 type Client struct {
-    conn    *websocket.Conn `json:"-"`
-    id      int             `json:"id"`
-    number  int             `json:"number"`
+    Conn   *websocket.Conn `json:"-"`
+    ID     int             `json:"id"`
+    Number int             `json:"number"`
 }
 
 type Server struct {
-    clients map[int]*Client
-    mu      sync.Mutex
-    nextID  int
+    Clients map[int]*Client
+    Mu      sync.Mutex
+    NextID  int
 }
 
 func NewServer() *Server {
     return &Server{
-        clients: make(map[int]*Client),
-        nextID:  1,
+        Clients: make(map[int]*Client),
+        NextID:  1,
     }
 }
 
-func (s *Server) addClient(conn *websocket.Conn) *Client {
-    s.mu.Lock()
-    defer s.mu.Unlock()
+func (s *Server) AddClient(conn *websocket.Conn) *Client {
+    s.Mu.Lock()
+    defer s.Mu.Unlock()
 
     client := &Client{
-        conn: conn,
-        id:   s.nextID,
-        number: 0,
+        Conn:   conn,
+        ID:     s.NextID,
+        Number: 0,
     }
-    s.clients[s.nextID] = client
-    s.nextID++
+    s.Clients[s.NextID] = client
+    s.NextID++
 
     return client
 }
 
-func (s *Server) removeClient(id int) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
+func (s *Server) RemoveClient(id int) {
+    s.Mu.Lock()
+    defer s.Mu.Unlock()
 
-    delete(s.clients, id)
+    delete(s.Clients, id)
 }
 
-func (s *Server) broadcast() {
-    s.mu.Lock()
-    defer s.mu.Unlock()
+func (s *Server) Broadcast() {
+    s.Mu.Lock()
+    defer s.Mu.Unlock()
 
-    data, err := json.Marshal(s.clients)
+    data, err := json.Marshal(s.Clients)
     if err != nil {
         log.Printf("Error marshalling data: %v", err)
         return
     }
-    log.Printf("Json: %s", data)
 
-    for _, client := range s.clients {
-        err := client.conn.WriteMessage(websocket.TextMessage, data)
+    for _, client := range s.Clients {
+        err := client.Conn.WriteMessage(websocket.TextMessage, data)
         if err != nil {
             log.Printf("Error writing message: %v", err)
         }
     }
 }
 
-func (s *Server) handleClient(client *Client) {
+func (s *Server) HandleClient(client *Client) {
     defer func() {
-        s.removeClient(client.id)
-        client.conn.Close()
-        s.broadcast()
+        s.RemoveClient(client.ID)
+        client.Conn.Close()
+        s.Broadcast()
     }()
 
-    s.broadcast()
+    s.Broadcast()
 
     for {
-        _, message, err := client.conn.ReadMessage()
+        _, message, err := client.Conn.ReadMessage()
         if err != nil {
             log.Printf("Error reading message: %v", err)
             break
@@ -87,22 +86,22 @@ func (s *Server) handleClient(client *Client) {
 
         switch string(message) {
         case "increment":
-            s.mu.Lock()
-            client.number++
-            s.mu.Unlock()
+            s.Mu.Lock()
+            client.Number++
+            s.Mu.Unlock()
         case "decrement":
-            s.mu.Lock()
-            client.number--
-            s.mu.Unlock()
+            s.Mu.Lock()
+            client.Number--
+            s.Mu.Unlock()
         default:
             log.Printf("Unknown command: %s", message)
         }
 
-        s.broadcast()
+        s.Broadcast()
     }
 }
 
-func (s *Server) serveWs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ServeWs(w http.ResponseWriter, r *http.Request) {
     upgrader := websocket.Upgrader{
         CheckOrigin: func(r *http.Request) bool {
             return true
@@ -115,13 +114,13 @@ func (s *Server) serveWs(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    client := s.addClient(conn)
-    go s.handleClient(client)
+    client := s.AddClient(conn)
+    go s.HandleClient(client)
 }
 
 func main() {
     server := NewServer()
-    http.HandleFunc("/ws", server.serveWs)
+    http.HandleFunc("/ws", server.ServeWs)
 
     fmt.Println("Server started on :8080")
     log.Fatal(http.ListenAndServe(":8080", nil))
