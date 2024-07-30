@@ -68,19 +68,36 @@ public:
 private:
     void on_message(const std::string& payload) {
         try {
+            std::array<std::array<int, 10>, 10> field{0};
             json j = json::parse(payload);
             std::cout << j << std::endl;
             for (const auto& item : j.items()) {
-                std::cout << "Client ID: " << item.key() << ", Number: " << item.value()["number"] << std::endl;
+                int x = item.value()["x"];
+                int y = item.value()["y"];
+                std::cout << "Client ID: " << item.key() << ", X: " << x << ", Y: " << y << std::endl;
+                field[y][x] = 1;
             }
+            print_matrix(field);
         } catch (const std::exception& e) {
             std::cout << "Error parsing message: " << e.what() << std::endl;
         }
     }
 
+    void print_matrix(const std::array<std::array<int, 10>, 10> &field) {
+      for (const auto &row : field) {
+        for (const auto &point : row) {
+          std::cout << point; 
+        }
+        std::cout << std::endl;
+      }
+    }
+
     client c;
     connection_hdl hdl;
     bool connected = false;
+    int client_id;
+    int client_x;
+    int client_y;
 };
 
 int main() {
@@ -94,10 +111,14 @@ int main() {
         std::cout << "Enter command (1: increment, 2: decrement, 0: exit): ";
         std::cin >> input;
 
-        if (input == "1") {
-            ws_client.send("increment");
-        } else if (input == "2") {
-            ws_client.send("decrement");
+        if (input == "d") {
+            ws_client.send("x_plus");
+        } else if (input == "a") {
+            ws_client.send("x_minus");
+        } else if (input == "w") {
+            ws_client.send("y_plus");
+        } else if (input == "s") {
+            ws_client.send("y_minus");
         } else if (input == "0") {
             ws_client.close();
             break;
