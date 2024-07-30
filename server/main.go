@@ -12,7 +12,8 @@ import (
 type Client struct {
     Conn   *websocket.Conn `json:"-"`
     ID     int             `json:"id"`
-    Number int             `json:"number"`
+    X int             `json:"x"`
+    Y int             `json:"y"`
 }
 
 type Server struct {
@@ -35,7 +36,8 @@ func (s *Server) AddClient(conn *websocket.Conn) *Client {
     client := &Client{
         Conn:   conn,
         ID:     s.NextID,
-        Number: 0,
+        X: 0,
+        Y: 0,
     }
     s.Clients[s.NextID] = client
     s.NextID++
@@ -85,13 +87,21 @@ func (s *Server) HandleClient(client *Client) {
         }
 
         switch string(message) {
-        case "increment":
+        case "x_plus":
             s.Mu.Lock()
-            client.Number++
+            client.X++
             s.Mu.Unlock()
-        case "decrement":
+        case "x_minus":
             s.Mu.Lock()
-            client.Number--
+            client.X--
+            s.Mu.Unlock()
+        case "y_plus":
+            s.Mu.Lock()
+            client.Y++
+            s.Mu.Unlock()
+        case "y_minus":
+            s.Mu.Lock()
+            client.Y--
             s.Mu.Unlock()
         default:
             log.Printf("Unknown command: %s", message)
