@@ -1,42 +1,43 @@
 package main
 
 import (
+    "context"
     "encoding/json"
     "fmt"
     "log"
     "net/http"
     "sync"
+    "math/rand"
 
+    "github.com/go-redis/redis/v8"
     "github.com/gorilla/websocket"
+    "server/objects"
 )
 
-type Client struct {
-    Conn *websocket.Conn `json:"-"`
-    ID   int             `json:"id"`
-    X    int             `json:"x"`
-    Y    int             `json:"y"`
-}
+var ctx = context.Background()
 
 type Server struct {
-    Clients map[int]*Client
-    Grid    map[int]map[int]*Client // Grid[y][x] -> Client
+    Clients map[int]*objects.Client
+    Grid    map[int]map[int]*objects.Client // Grid[y][x] -> Client
     Mu      sync.Mutex
     NextID  int
+    RedisClient *redis.Client
 }
 
-func NewServer() *Server {
+func NewServer(redisClient *redis.Client) *Server {
     return &Server{
-        Clients: make(map[int]*Client),
-        Grid:    make(map[int]map[int]*Client),
+        Clients: make(map[int]*objects.Client),
+        Grid:    make(map[int]map[int]*objects.Client),
         NextID:  1,
+        RedisClient: redisClient,
     }
 }
 
-func (s *Server) AddClient(conn *websocket.Conn) *Client {
+func (s *Server) AddClient(conn *websocket.Conn) *objects.Client {
     s.Mu.Lock()
     defer s.Mu.Unlock()
 
-    client := &Client{
+    client := &objects.Client{
         Conn: conn,
         ID:   s.NextID,
         X:    0,
@@ -44,7 +45,7 @@ func (s *Server) AddClient(conn *websocket.Conn) *Client {
     }
     s.Clients[s.NextID] = client
     if s.Grid[client.Y] == nil {
-        s.Grid[client.Y] = make(map[int]*Client)
+        s.Grid[client.Y] = make(map[int]*objects.Client)
     }
     s.Grid[client.Y][client.X] = client
     s.NextID++
@@ -66,7 +67,7 @@ func (s *Server) RemoveClient(id int) {
     }
 }
 
-func (s *Server) UpdateClientPosition(client *Client, newX, newY int) {
+func (s *Server) UpdateClientPosition(client *objects.Client, newX, newY int) {
     s.Mu.Lock()
     defer s.Mu.Unlock()
     if s.Grid[newY] != nil && s.Grid[newY][newX] != nil {
@@ -85,13 +86,17 @@ func (s *Server) UpdateClientPosition(client *Client, newX, newY int) {
 
     // Add client to new position
     if s.Grid[newY] == nil {
-        s.Grid[newY] = make(map[int]*Client)
+        s.Grid[newY] = make(map[int]*objects.Client)
     }
     s.Grid[newY][newX] = client
+    // Обновляем данные клиента в Redis
+
+    data, _ := json.Marshal(client)
+    s.RedisClient.Set(ctx, fmt.Sprintf("client:%d", client.ID), data, 0)
 }
 
-func (s *Server) GetClientsInRange(x, y, rangeVal int) map[int]*Client {
-    clientsInRange := make(map[int]*Client)
+func (s *Server) GetClientsInRange(x, y, rangeVal int) map[int]*objects.Client {
+    clientsInRange := make(map[int]*objects.Client)
     for dy := -rangeVal; dy <= rangeVal; dy++ {
         for dx := -rangeVal; dx <= rangeVal; dx++ {
             nx, ny := x+dx, y+dy
@@ -110,6 +115,9 @@ func (s *Server) Broadcast() {
     defer s.Mu.Unlock()
 
     for _, client := range s.Clients {
+      if client.Conn == nil {
+        continue
+      }
         nearbyClients := s.GetClientsInRange(client.X, client.Y, 3)
         data, err := json.Marshal(nearbyClients)
         if err != nil {
@@ -124,7 +132,7 @@ func (s *Server) Broadcast() {
     }
 }
 
-func (s *Server) HandleClient(client *Client) {
+func (s *Server) HandleClient(client *objects.Client) {
     defer func() {
         s.RemoveClient(client.ID)
         client.Conn.Close()
@@ -186,8 +194,93 @@ func (s *Server) ServeWs(w http.ResponseWriter, r *http.Request) {
     go s.HandleClient(client)
 }
 
+func (s *Server) GenerateFakeClients(num int, size_x int, size_y int) {
+    s.Mu.Lock()
+    defer s.Mu.Unlock()
+
+    for i := 0; i < num; i++ {
+        x := rand.Intn(size_x)
+        y := rand.Intn(size_y)
+        client := &objects.Client{
+            ID:     s.NextID,
+            X:      x,
+            Y:      y,
+        }
+        s.Clients[s.NextID] = client
+        if s.Grid[client.Y] == nil {
+            s.Grid[client.Y] = make(map[int]*objects.Client)
+        }
+        s.Grid[client.Y][client.X] = client
+        s.NextID++
+
+        // Сохраняем фейкового клиента в Redis
+        data, _ := json.Marshal(client)
+        s.RedisClient.Set(ctx, fmt.Sprintf("client:%d", client.ID), data, 0)
+    }
+}
+
+func (s *Server) SaveMapToRedis() {
+    s.Mu.Lock()
+    defer s.Mu.Unlock()
+
+    // Сохраняем состояние карты в Redis
+    mapData, _ := json.Marshal(s.Grid)
+    s.RedisClient.Set(ctx, "map:state", mapData, 0)
+    log.Println("Map saved")
+}
+
+func (s *Server) LoadMapFromRedis() {
+    s.Mu.Lock()
+    defer s.Mu.Unlock()
+
+    // Загружаем состояние карты из Redis
+    mapData, err := s.RedisClient.Get(ctx, "map:state").Result()
+    if err == redis.Nil {
+        log.Println("No map state found in Redis")
+        return
+    } else if err != nil {
+        log.Fatalf("Error loading map state from Redis: %v", err)
+    }
+
+    var loadedGrid map[int]map[int]*objects.Client
+    if err := json.Unmarshal([]byte(mapData), &loadedGrid); err != nil {
+        log.Fatalf("Error unmarshalling map state from Redis: %v", err)
+    }
+
+    s.Grid = loadedGrid
+
+    // Восстанавливаем клиентов из карты
+    for _, row := range s.Grid {
+        for _, client := range row {
+            s.Clients[client.ID] = client
+        }
+    }
+
+    // Обновляем следующий ID
+    if len(s.Clients) > 0 {
+        s.NextID = len(s.Clients) + 1
+    }
+}
+
 func main() {
-    server := NewServer()
+    // Инициализируем подключение к Redis
+    rdb := redis.NewClient(&redis.Options{
+        Addr: "localhost:6379", // Адрес Redis сервера
+    })
+
+    server := NewServer(rdb)
+
+    // Загружаем состояние карты из Redis
+    server.LoadMapFromRedis()
+
+    // Генерируем псевдоклиентов при запуске
+    if len(server.Clients) == 0 {
+        server.GenerateFakeClients(10, 10, 10)
+    }
+
+    // Сохраняем состояние карты в Redis
+    defer server.SaveMapToRedis()
+
     http.HandleFunc("/ws", server.ServeWs)
 
     fmt.Println("Server started on :8080")
