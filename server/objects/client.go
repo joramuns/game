@@ -6,8 +6,7 @@ import(
 
 type Client struct {
     Conn *websocket.Conn `json:"-"`
-    ID   int             `json:"id"`
-    X    int             `json:"x"`
-    Y    int             `json:"y"`
+    Player  *Object
+    ID      int             `json:"id"`
 }
 
